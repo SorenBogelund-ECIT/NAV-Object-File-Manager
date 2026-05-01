@@ -152,6 +152,213 @@ static void RunMerge(string[] args, Encoding encoding1252)
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+sealed class ModeForm : Form
+{
+    public bool IsMerge { get; private set; }
+
+    public ModeForm()
+    {
+        Text            = "NAV Object File Manager";
+        Width           = 360;
+        Height          = 150;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox     = false;
+        MinimizeBox     = false;
+        StartPosition   = FormStartPosition.CenterScreen;
+
+        var panel = new TableLayoutPanel
+        {
+            Dock        = DockStyle.Fill,
+            Padding     = new Padding(16),
+            RowCount    = 2,
+            ColumnCount = 2,
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Controls.Add(panel);
+
+        var lbl = new Label
+        {
+            Text      = "Hvad vil du gøre?",
+            AutoSize  = true,
+            Dock      = DockStyle.Fill,
+            TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
+        };
+        panel.Controls.Add(lbl, 0, 0);
+        panel.SetColumnSpan(lbl, 2);
+
+        var btnSplit = new Button { Text = "Opdel (split)", Dock = DockStyle.Fill, Height = 36 };
+        var btnMerge = new Button { Text = "Saml (merge)", Dock = DockStyle.Fill, Height = 36 };
+
+        btnSplit.Click += (_, _) => { IsMerge = false; DialogResult = DialogResult.OK; Close(); };
+        btnMerge.Click += (_, _) => { IsMerge = true;  DialogResult = DialogResult.OK; Close(); };
+
+        panel.Controls.Add(btnSplit, 0, 1);
+        panel.Controls.Add(btnMerge, 1, 1);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+sealed class MergeProgressForm : Form
+{
+    private readonly string _inputFolder;
+    private readonly string _outputFolder;
+    private readonly Encoding _encoding;
+
+    private readonly Label _lblFile;
+    private readonly Label _lblCount;
+    private readonly ProgressBar _bar;
+
+    public MergeProgressForm(string inputFolder, string outputFolder, Encoding encoding)
+    {
+        _inputFolder  = inputFolder;
+        _outputFolder = outputFolder;
+        _encoding     = encoding;
+
+        Text            = "NAV Object Merger";
+        Width           = 520;
+        Height          = 140;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox     = false;
+        MinimizeBox     = false;
+        StartPosition   = FormStartPosition.CenterScreen;
+
+        var panel = new TableLayoutPanel
+        {
+            Dock        = DockStyle.Fill,
+            Padding     = new Padding(12),
+            RowCount    = 3,
+            ColumnCount = 1,
+        };
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        Controls.Add(panel);
+
+        _lblFile  = new Label { Text = "Forbereder…", AutoSize = true, Dock = DockStyle.Fill };
+        _lblCount = new Label { Text = "", AutoSize = true, Dock = DockStyle.Fill };
+        _bar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 1,
+            Value   = 0,
+            Dock    = DockStyle.Fill,
+            Style   = ProgressBarStyle.Continuous,
+        };
+
+        panel.Controls.Add(_lblFile);
+        panel.Controls.Add(_lblCount);
+        panel.Controls.Add(_bar);
+    }
+
+    private record ProgressInfo(int Done, int Total, string Label);
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+
+        var worker = new System.ComponentModel.BackgroundWorker { WorkerReportsProgress = true };
+        int totalObjects = 0;
+
+        worker.DoWork += (_, _) =>
+        {
+            worker.ReportProgress(0, new ProgressInfo(0, 0, "Finder filer…"));
+
+            var inputFiles = Directory
+                .EnumerateFiles(_inputFolder, "*.txt", SearchOption.AllDirectories)
+                .Order()
+                .ToList();
+
+            var headerRx = new Regex(@"^OBJECT\s+\w+\s+\d+", RegexOptions.Compiled);
+            worker.ReportProgress(0, new ProgressInfo(0, 0, "Tæller objekter…"));
+            int totalCount = inputFiles.Sum(f =>
+                File.ReadLines(f, _encoding).Count(l => headerRx.IsMatch(l)));
+
+            string outputFile = Path.Combine(_outputFolder, "merged-objects.txt");
+            int done = 0;
+
+            using var writer = new StreamWriter(outputFile, append: false, _encoding);
+            var headerPattern = new Regex(@"^OBJECT\s+(\w+)\s+(\d+)\s+(.+?)\s*$", RegexOptions.Compiled);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var file in inputFiles)
+            {
+                var lines  = File.ReadAllLines(file, _encoding);
+                var buffer = new StringBuilder();
+                string? objKey = null;
+
+                void FlushObj()
+                {
+                    if (seen.Add(objKey!))
+                    {
+                        writer.Write(buffer.ToString());
+                        totalObjects++;
+                    }
+                    objKey = null;
+                    buffer.Clear();
+                }
+
+                foreach (var line in lines)
+                {
+                    var m = headerPattern.Match(line);
+                    if (m.Success)
+                    {
+                        if (objKey != null && buffer.Length > 0) FlushObj();
+                        objKey = $"{m.Groups[1].Value}|{m.Groups[2].Value}";
+                        done++;
+                        worker.ReportProgress(0,
+                            new ProgressInfo(done, totalCount,
+                                $"{m.Groups[1].Value} {m.Groups[2].Value} {m.Groups[3].Value.Trim()}"));
+                        buffer.Clear();
+                        buffer.AppendLine(line);
+                    }
+                    else if (objKey != null)
+                    {
+                        buffer.AppendLine(line);
+                        if (line == "}") FlushObj();
+                    }
+                }
+
+                if (objKey != null && buffer.Length > 0) FlushObj();
+            }
+        };
+
+        worker.ProgressChanged += (_, args) =>
+        {
+            if (args.UserState is not ProgressInfo p) return;
+            if (p.Total > 0) _bar.Maximum = p.Total;
+            _bar.Value     = Math.Min(p.Done, _bar.Maximum);
+            _lblFile.Text  = p.Label;
+            _lblCount.Text = p.Total > 0 ? $"Objekt {p.Done} af {p.Total}" : "";
+        };
+
+        worker.RunWorkerCompleted += (_, args) =>
+        {
+            if (args.Error != null)
+            {
+                MessageBox.Show(args.Error.ToString(), "NAV Object Merger – fejl",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            else
+            {
+                string outFile = Path.Combine(_outputFolder, "merged-objects.txt");
+                MessageBox.Show(
+                    $"{totalObjects} objekter samlet i:\n{outFile}",
+                    "NAV Object Merger",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            Close();
+        };
+
+        worker.RunWorkerAsync();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 sealed class ProgressForm : Form
 {
     private readonly List<string> _files;
