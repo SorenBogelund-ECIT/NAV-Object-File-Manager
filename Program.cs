@@ -2,12 +2,14 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
-Application.EnableVisualStyles();
-Application.SetCompatibleTextRenderingDefault(false);
-
 var staThread = new Thread(() =>
 {
-    try { Run(args); }
+    try
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Run(args);
+    }
     catch (Exception ex)
     {
         MessageBox.Show(ex.ToString(), "NAV Object File Manager – fejl",
