@@ -10,7 +10,7 @@ var staThread = new Thread(() =>
     try { Run(args); }
     catch (Exception ex)
     {
-        MessageBox.Show(ex.ToString(), "NAV Object Splitter – fejl",
+        MessageBox.Show(ex.ToString(), "NAV Object File Manager – fejl",
             MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 });
@@ -25,6 +25,34 @@ static void Run(string[] args)
     Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     var encoding1252 = Encoding.GetEncoding(1252);
 
+    // Afgør tilstand: split (standard) eller merge
+    bool mergeMode;
+    if (args.Length > 0 && args[0].Equals("--merge", StringComparison.OrdinalIgnoreCase))
+    {
+        mergeMode = true;
+    }
+    else if (args.Length > 0)
+    {
+        mergeMode = false;
+    }
+    else
+    {
+        using var modeForm = new ModeForm();
+        if (modeForm.ShowDialog() != DialogResult.OK)
+            return;
+        mergeMode = modeForm.IsMerge;
+    }
+
+    if (mergeMode)
+        RunMerge(args, encoding1252);
+    else
+        RunSplit(args, encoding1252);
+}
+
+// ─── Split-tilstand ───────────────────────────────────────────────────────────
+
+static void RunSplit(string[] args, Encoding encoding1252)
+{
     // Vælg input-filer
     List<string> inputFiles;
     if (args.Length > 0)
@@ -70,6 +98,55 @@ static void Run(string[] args)
 
     // Vis progressvindue og behandl filer i baggrunden
     using var form = new ProgressForm(inputFiles, outputFolder, encoding1252);
+    Application.Run(form);
+}
+
+// ─── Merge-tilstand ───────────────────────────────────────────────────────────
+
+static void RunMerge(string[] args, Encoding encoding1252)
+{
+    // Vælg inputmappe med NAV-objektfiler
+    string inputFolder;
+    if (args.Length > 1)
+    {
+        inputFolder = args[1];
+    }
+    else
+    {
+        using var dlg = new FolderBrowserDialog
+        {
+            Description            = "Vælg mappe med NAV-objektfiler",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton    = false,
+        };
+        if (dlg.ShowDialog() != DialogResult.OK)
+            return;
+        inputFolder = dlg.SelectedPath;
+    }
+
+    // Vælg outputmappe
+    string outputFolder;
+    if (args.Length > 2)
+    {
+        outputFolder = args[2];
+    }
+    else
+    {
+        using var dlg = new FolderBrowserDialog
+        {
+            Description            = "Vælg outputmappe",
+            UseDescriptionForTitle = true,
+            SelectedPath           = Path.GetDirectoryName(inputFolder)!,
+            ShowNewFolderButton    = true,
+        };
+        if (dlg.ShowDialog() != DialogResult.OK)
+            return;
+        outputFolder = dlg.SelectedPath;
+    }
+
+    Directory.CreateDirectory(outputFolder);
+
+    using var form = new MergeProgressForm(inputFolder, outputFolder, encoding1252);
     Application.Run(form);
 }
 
@@ -149,7 +226,7 @@ sealed class ProgressForm : Form
             int totalCount = _files.Sum(f =>
                 File.ReadLines(f, _encoding).Count(l => headerRx.IsMatch(l)));
 
-            // Pas 2 – behandl og rapporter per objekt
+            // Pas 2 – behandl og rapportér per objekt
             int done = 0;
             foreach (var file in _files)
             {
@@ -193,7 +270,7 @@ sealed class ProgressForm : Form
         worker.RunWorkerAsync();
     }
 
-    // ── NAV object parsing ──────────────────────────────────────────────────────────────
+    // ── NAV object parsing ────────────────────────────────────────────────────
 
     static int ProcessFile(string filePath, string outputFolder, Encoding encoding,
                            HashSet<string> seen, ref int skipped,
